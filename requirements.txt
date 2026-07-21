@@ -1,0 +1,23 @@
+# requirements.txt
+
+# core
+pandas== 3.0.3
+numpy== 2.5.1
+
+# visualization / EDA
+matplotlib==3.11.0
+seaborn ==0.13.2
+missingno==0.5.2
+
+# stats (A/B sim, hypothesis tests)
+scipy==1.18.0 
+statsmodels==0.14.6
+
+# modeling (step 3 of the plan)
+scikit-learn ==1.9.0
+xgboost == 3.3.0 
+
+# notebook
+jupyter ==1.1.1
+
+pyarrow==25.0.0 
