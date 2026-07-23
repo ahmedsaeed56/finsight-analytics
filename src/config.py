@@ -10,6 +10,7 @@ LOANS_RAW        = DATA_RAW / "loans_raw.csv"
 TRANSACTIONS_RAW = DATA_RAW / "transactions_raw.csv"
 
 CUSTOMERS_CLEAN  = DATA_CLEAN / "customers_clean.parquet"
+LOANS_CLEAN = DATA_CLEAN / "loans_clean.parquet" 
 
 
 # ---------------------------------------------------------------------------
@@ -96,3 +97,9 @@ CITY_TO_REGION = {
     "Gilgit": "AJK-GB",
     "Muzaffarabad": "AJK-GB",
 } 
+
+# ── config.py — add these loan schema constants ──────────────────
+LOAN_PURPOSES = ["nano_loan", "merchant_advance", "device_finance", "emergency"]
+TERM_MIN, TERM_MAX = 1, 12           # legal offered terms — not this sample's range
+INTEREST_MIN, INTEREST_MAX = 0, 100  # legal sanity band — deliberately NOT the observed 18–36
+# AS_OF_DATE already lives in config from the customers build 
