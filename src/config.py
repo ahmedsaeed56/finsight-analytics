@@ -11,6 +11,7 @@ TRANSACTIONS_RAW = DATA_RAW / "transactions_raw.csv"
 
 CUSTOMERS_CLEAN  = DATA_CLEAN / "customers_clean.parquet"
 LOANS_CLEAN = DATA_CLEAN / "loans_clean.parquet" 
+TRANSACTIONS_CLEAN = DATA_CLEAN / "transactions_clean.parquet" 
 
 
 # ---------------------------------------------------------------------------
