@@ -6,12 +6,36 @@ This is the notebook's decided steps, refactored into small composed functions
 schema — now callable and rerunnable on any raw customers file.
 
 Explore in the notebook, productionize here.
+
+THE AS-OF ANCHOR
+----------------
+`recover_tenure` and `validate` both need to know when the data was frozen.
+That is a property of the FILE, not of the system, so it arrives as an argument
+rather than being read from config. An upload dated 2026 with a hardcoded 2025
+anchor produces negative tenures and fails every date check.
+
+Because the anchor is derived from the loans and transactions dates, customers
+can no longer be cleaned first or independently — the orchestrator cleans those
+two, derives the anchor, then calls this.
 """
 
 import numpy as np
 import pandas as pd
 
 from src import config as C
+
+
+def _tenure_ceiling(as_of):
+    """Latest date onboarding + stored tenure may reach without contradicting.
+
+    Derived here rather than passed in, and derived ONCE rather than in both
+    callers — recover_tenure and validate must agree on it, and duplicated
+    arithmetic is how two functions quietly stop agreeing.
+
+    pd.Timestamp() normalises the input, so a string from config and a
+    Timestamp from the orchestrator both work.
+    """
+    return pd.Timestamp(as_of) + pd.Timedelta(days=C.TENURE_GRACE_DAYS)
 
 
 # ==========================================================================
@@ -77,14 +101,24 @@ def freeze_categories(df):
     # income_band is ORDERED (rank <25k < ... < 250k+ preserved for modeling).
     # Done after values are cleaned, so only clean labels get frozen.
     df = df.copy()
+
+    # Mandatory: no guard. region and city describe every customer, so a
+    # KeyError here is the correct outcome — that file is broken.
     for col in C.CATEGORY_COLUMNS:
         df[col] = df[col].astype("category")
+
+    # Optional: segment_true is the K-Means answer key and exists only in this
+    # synthetic extract, so a real upload legitimately arrives without it.
+    for col in C.OPTIONAL_CATEGORY_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col].astype("category")
+
     df["declared_income_band"] = pd.Categorical(
         df["declared_income_band"],
         categories=C.BAND_ORDER,
         ordered=True,
     )
-    return df
+    return df 
 
 
 # ==========================================================================
@@ -123,16 +157,20 @@ def nullify_impossible_ages(df):
     return df
 
 
-def recover_tenure(df):
+def recover_tenure(df, as_of):
     # tenure is RECOVERABLE from onboarding_date + the as-of anchor, not
     # guessed. Two jobs:
     #   1. Fill missing (NaN) tenure with (anchor - onboarding) in months.
     #   2. Correct CONTRADICTORY stored tenure: rows whose onboarding + stored
     #      tenure overshoots the grace ceiling (impossible future) get
     #      overwritten with the computed value.
+    #
+    # `as_of` is an ARGUMENT because it describes the file being cleaned. A
+    # 2026 upload measured against a 2025 anchor gets negative tenures on every
+    # row, and the range assert in validate() is the only thing that catches it.
     df = df.copy()
-    anchor = pd.Timestamp(C.AS_OF_DATE)
-    ceiling = pd.Timestamp(C.TENURE_CEILING)
+    anchor = pd.Timestamp(as_of)
+    ceiling = _tenure_ceiling(as_of)
 
     # correct tenure implied by the reliable dates
     gap_days = (anchor - df["onboarding_date"]).dt.days
@@ -196,8 +234,12 @@ def add_derived_columns(df):
 # ==========================================================================
 # Orchestrator
 # ==========================================================================
-def clean_customers(raw):
+def clean_customers(raw, as_of):
     # full pipeline: raw -> clean, in the notebook's decided order.
+    #
+    # `as_of` is threaded to recover_tenure, the only step that needs it. It is
+    # required rather than defaulted so a caller cannot silently inherit the
+    # reference extract's anchor.
     df = raw.copy()
     df = strip_headers(df)
     df = strip_string_values(df)
@@ -207,7 +249,7 @@ def clean_customers(raw):
     df = standardize_booleans(df)       # Step 5
     df = drop_dupes(df)                 # Step 9 (before split)
     df = nullify_impossible_ages(df)    # Step 7
-    df = recover_tenure(df)             # Step 7
+    df = recover_tenure(df, as_of)      # Step 7
     df = add_missing_flags(df)          # Step 10 flags (pre-fill)
     df = impute_missing(df)             # Step 10 fill (see leakage note)
     df = add_derived_columns(df)        # Step 11
@@ -218,7 +260,7 @@ def clean_customers(raw):
 # ==========================================================================
 # Step 13 — validation gate
 # ==========================================================================
-def validate(df):
+def validate(df, as_of):
     # each assert encodes a belief the cleaning established; raises if broken.
     assert df["customer_id"].is_unique, "customer_id not unique"
     assert df["age"].notna().all(), "age still has NaN"
@@ -226,22 +268,29 @@ def validate(df):
     assert df["declared_income_band"].notna().all(), "income-band still has NaN"
     assert df["age"].between(C.AGE_MIN, C.AGE_MAX).all(), "age out of range"
     assert df["wallet_tenure_months"].between(0, 120).all(), "tenure out of range"
-    assert df["onboarding_date"].max() <= pd.Timestamp(C.TENURE_CEILING), "future onboarding"
+    assert df["onboarding_date"].max() <= _tenure_ceiling(as_of), "future onboarding"
     assert set(df["region"].dropna().unique()) <= set(C.VALID_REGIONS), "invalid region"
-    assert set(df["segment_true"].dropna().unique()) <= set(C.VALID_SEGMENTS), "invalid segment"
+
+    # Optional: the K-Means answer key exists only in this synthetic extract.
+    # Checked when present, skipped when a real upload arrives without it.
+    if "segment_true" in df.columns:
+        assert set(df["segment_true"].dropna().unique()) <= set(C.VALID_SEGMENTS), \
+            "invalid segment"
+
     for col in ["smartphone_user", "has_savings", "has_insurance", "is_whale"]:
         assert set(df[col].unique()) <= {0, 1}, f"{col} not binary"
     print("All validation checks passed ✅")
-    return df
+    return df 
 
 
 # ==========================================================================
 # Entry point — reproduce data/clean/customers_clean.parquet from raw
 # ==========================================================================
 def main():
+    # The reference build states its own anchor rather than inheriting one.
     raw = pd.read_csv(C.CUSTOMERS_RAW, skipinitialspace=True)
-    cust = clean_customers(raw)
-    validate(cust)
+    cust = clean_customers(raw, C.AS_OF_DATE)
+    validate(cust, C.AS_OF_DATE)
     C.DATA_CLEAN.mkdir(parents=True, exist_ok=True)
     cust.to_parquet(C.CUSTOMERS_CLEAN, index=False)
     print("Saved:", C.CUSTOMERS_CLEAN)

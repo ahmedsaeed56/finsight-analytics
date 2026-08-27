@@ -1,0 +1,46 @@
+# Secrets — set as HF Space secrets, never in the image.
+.env
+.env.*
+
+# Local virtual environment.
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Notebooks and exploratory work — not needed at runtime.
+notebooks/
+*.ipynb
+*.ipynb_checkpoints/
+
+# Runtime data — regenerated on first load. app.db and current_dataset.json
+# rebuild themselves; uploads folder is per-user and shouldn't be baked in.
+data/app.db
+data/app.db-shm
+data/app.db-wal
+data/current_dataset.json
+data/uploads/
+data/graph_checkpoints.db
+data/graph_checkpoints.db-shm
+data/graph_checkpoints.db-wal
+
+# Reference extract stays IN the image so users see something on first visit.
+# (Do NOT ignore data/features/ or data/models/ — those need to ship.)
+
+# Git internals.
+.git/
+.gitignore
+.gitattributes
+
+# IDE and OS junk.
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docs and dev config not needed at runtime.
+docs/
+tests/
+*.md
+!README.md

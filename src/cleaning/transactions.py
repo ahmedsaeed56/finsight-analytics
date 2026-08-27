@@ -28,8 +28,8 @@ from src.config import (
     TRANSACTIONS_RAW,
     TRANSACTIONS_CLEAN,
     AS_OF_DATE,
-)
-
+    PANEL_MONTHS,
+) 
 
 # ---------------------------------------------------------------------------
 # Individual cleaning steps
@@ -122,8 +122,11 @@ def clean_transactions(path=TRANSACTIONS_RAW):
 REQUIRED = ["customer_id", "month", "txn_count", "txn_value_pkr"]
 
 
-def validate_transactions(df):
-    """Assert every invariant of the clean transactions table."""
+def validate_transactions(df, as_of):
+    """Assert every invariant of the clean transactions table.
+
+    `as_of` is the file's freeze date — see validate_loans.
+    """
     # composite key — one row per customer per month (this table's identity)
     assert df.duplicated(["customer_id", "month"]).sum() == 0, "duplicate (customer_id, month)"
 
@@ -135,27 +138,35 @@ def validate_transactions(df):
     assert (df["txn_value_pkr"] >= 0).all(), "negative txn_value_pkr"
 
     # no month in the future
-    assert (df["month"] <= AS_OF_DATE).all(), "month in the future"
+    assert (df["month"] <= pd.Timestamp(as_of)).all(), "month in the future"
+
+    # Panel length. Counted as DISTINCT months rather than (max - min), because
+    # subtracting two dates gives days, and because a count also catches a file
+    # that spans a year with a month missing from the middle.
+    #
+    # Checked here rather than in the pre-gate: the gate runs before
+    # parse_month, where these values are still a mix of 'YYYY-MM' and
+    # 'Mon-YYYY' strings and no span is measurable.
+    n_months = df["month"].nunique()
+    assert n_months == PANEL_MONTHS, \
+        f"panel is {n_months} months, expected {PANEL_MONTHS}"
 
     # completeness
     assert df[REQUIRED].notna().all().all(), "NaN in a required column"
 
     # NOTE: referential integrity (customer_id in customers) is deliberately NOT
     # here — it needs the merge, so it lives in the reconciliation file.
-    return True
-
-
+    return True 
 # ---------------------------------------------------------------------------
 # Entry point — load -> clean -> validate -> save.
 # ---------------------------------------------------------------------------
 
 def main():
     df = clean_transactions()
-    validate_transactions(df)
+    validate_transactions(df, AS_OF_DATE)
     TRANSACTIONS_CLEAN.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(TRANSACTIONS_CLEAN, index=False)
-    print(f"transactions_clean saved: {df.shape[0]} rows, {df.shape[1]} cols -> {TRANSACTIONS_CLEAN}")
-
+    print(f"transactions_clean saved: {df.shape[0]} rows, {df.shape[1]} cols -> {TRANSACTIONS_CLEAN}") 
 
 if __name__ == "__main__":
     main() 

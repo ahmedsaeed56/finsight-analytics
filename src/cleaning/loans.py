@@ -18,17 +18,24 @@ Two checks are DELIBERATELY not here, because they need the customers table:
 Both are handled later in the reconciliation stage. Until then the 3
 negatives ride into the clean file *flagged* (see `add_flags`) — never
 silently altered.
+
+THE LABEL IS OPTIONAL
+---------------------
+`defaulted` is the model target, and a loan disbursed last week does not have
+one yet. So every step that touches it is guarded: present at training time and
+checked, absent at scoring time and skipped. Nothing else in this file is
+optional.
 """
 
 import pandas as pd
 
 from src.config import (
     LOANS_RAW,                   # path to the raw csv
-    LOANS_CLEAN,                 # path to write the cleaned parquet  (ADD THIS TO config.py)
+    LOANS_CLEAN,                 # path to write the cleaned parquet
     LOAN_PURPOSES,               # allowed purpose categories: the 4 legal values
     TERM_MIN, TERM_MAX,          # legal term_months bounds (1, 12)
     INTEREST_MIN, INTEREST_MAX,  # legal interest_rate_pct sanity band (0, 100)
-    AS_OF_DATE,                  # snapshot date; nothing may be disbursed after it
+    AS_OF_DATE,                  # this extract's freeze date, passed explicitly
 )
 
 
@@ -92,6 +99,19 @@ def strip_text_values(df):
         df[col] = df[col].str.strip()
     return df
 
+def fix_negative_amounts(df):
+    """
+    Step 7 — illegal value, fate = correct.
+    3 rows have negative amount_pkr. Proven in reconciliation to be pure
+    sign flips: recovered = inflow_to_loan_ratio * avg_monthly_inflow_pkr
+    matched abs(amount_pkr) exactly. So abs() is a recovery, not a guess.
+    """
+    df = df.copy()
+    n_neg = (df["amount_pkr"] < 0).sum()
+    if n_neg:
+        print(f"[loans] correcting {n_neg} negative amount_pkr (sign flip)")
+        df["amount_pkr"] = df["amount_pkr"].abs()
+    return df 
 
 def parse_dates(df):
     """Parse the mixed-format disbursed_date into a single datetime column.
@@ -123,14 +143,31 @@ def add_flags(df):
 
 
 def freeze_types(df):
-    """Freeze purpose to a category dtype.
+    """Freeze purpose to category and defaulted to int8.
 
-    Its values are known-clean (exactly the 4 in LOAN_PURPOSES), so lock the
-    type in. NOTE: the notebook line was `loan['purpose'].astype('category')`
+    purpose: values are known-clean (exactly the 4 in LOAN_PURPOSES), so lock
+    the type in. NOTE: the notebook line was `loan['purpose'].astype('category')`
     WITHOUT assigning back — that returns a converted Series and discards it,
     a no-op. Here we assign it, so the freeze actually takes effect.
-    """
+
+    defaulted: arrives as the TEXT 'True'/'False', never as a real boolean.
+    It was previously only becoming numeric via pandas read-time inference,
+    which is fragile — the inference changed and a groupby('mean') broke with
+    "dtype 'str' does not support operation 'mean'". Cast it explicitly here.
+    astype(str) first so this holds whether pandas hands us strings or bools.
+    map() sends anything unexpected to NaN silently, so validate_loans asserts
+    both isin([0,1]) and notna() — this is the model target, it gets guarded.
+
+    The cast is guarded because a scoring upload has no label at all. Without
+    the guard this raises KeyError before the validation gate is ever reached,
+    so the user would see a crash rather than a message.
+    """ 
+    
     df["purpose"] = df["purpose"].astype("category")
+
+    if "defaulted" in df.columns:
+        df["defaulted"] = df["defaulted"].astype(str).str.strip().map({"True": 1, "False": 0}).astype("int8")
+
     return df
 
 
@@ -144,9 +181,13 @@ def clean_loans(path=LOANS_RAW):
     Order matters: dedup on raw strings first; convert interest before the
     text-strip loop so the numeric column is skipped; parse dates after the
     strip; add the flag and freeze types last.
+
+    No `as_of` parameter: nothing in the cleaning steps uses the anchor. Only
+    `validate_loans` does.
     """
     df = load_raw(path)
     df = drop_exact_duplicates(df)
+    df = fix_negative_amounts(df) 
     df = clean_interest_rate(df)
     df = strip_text_values(df)
     df = parse_dates(df)
@@ -160,15 +201,26 @@ def clean_loans(path=LOANS_RAW):
 # Referential integrity is intentionally excluded (it needs the merge).
 # ---------------------------------------------------------------------------
 
+# Split by whether the column MUST be present. Same shape as the customers
+# CATEGORY_COLUMNS split, and for the same reason: a list that mixes mandatory
+# and optional columns cannot be checked in one pass without failing the
+# label-less upload it is supposed to allow.
 REQUIRED = [
     "loan_id", "customer_id", "disbursed_date", "purpose", "amount_pkr",
-    "term_months", "interest_rate_pct", "inflow_to_loan_ratio", "defaulted",
+    "term_months", "interest_rate_pct", "inflow_to_loan_ratio",
 ]
 
+OPTIONAL_REQUIRED = ["defaulted"]   # present at training time, absent at scoring
 
-def validate_loans(df):
+
+def validate_loans(df, as_of):
     """Assert every invariant of the clean loans table. Raises on the first
-    violated belief; returns True if all hold."""
+    violated belief; returns True if all hold.
+
+    `as_of` is the file's freeze date, passed in rather than read from config:
+    it describes THIS extract, and a stale anchor fails the future-date check
+    on every row of a later upload.
+    """
     # key integrity
     assert df["loan_id"].is_unique, "loan_id not unique"
 
@@ -178,6 +230,14 @@ def validate_loans(df):
     # amount positive — but exempt the parked negatives, which ride in flagged
     assert (df.loc[~df["amount_suspect"], "amount_pkr"] > 0).all(), \
         "non-flagged amount_pkr <= 0"
+    
+    assert (df["amount_pkr"] >= 0).all(), "negative amount_pkr found"
+
+    # The model target, checked only when it exists. map() sends anything
+    # unexpected to NaN silently, so both asserts matter when it does.
+    if "defaulted" in df.columns:
+        assert df["defaulted"].isin([0, 1]).all(), "defaulted not 0/1"
+        assert df["defaulted"].notna().all(), "defaulted has nulls"
 
     # numeric ranges — legal bounds, not this sample's min/max
     assert df["term_months"].between(TERM_MIN, TERM_MAX).all(), "term out of range"
@@ -186,15 +246,16 @@ def validate_loans(df):
     assert (df["inflow_to_loan_ratio"] > 0).all(), "ratio must be positive"
 
     # no future disbursements
-    assert (df["disbursed_date"] <= AS_OF_DATE).all(), "disbursed_date in the future"
+    assert (df["disbursed_date"] <= pd.Timestamp(as_of)).all(), \
+        "disbursed_date in the future"
 
-    # completeness
-    assert df[REQUIRED].notna().all().all(), "NaN in a required column"
+    # completeness — mandatory columns always, optional ones only when present
+    checked = REQUIRED + [c for c in OPTIONAL_REQUIRED if c in df.columns]
+    assert df[checked].notna().all().all(), "NaN in a required column"
 
     # NOTE: referential integrity (customer_id in customers) is deliberately
     # NOT here — it needs the merge, so it lives in the reconciliation file.
-    return True
-
+    return True 
 
 # ---------------------------------------------------------------------------
 # Entry point — load -> clean -> validate -> save.
@@ -202,7 +263,7 @@ def validate_loans(df):
 
 def main():
     df = clean_loans()
-    validate_loans(df)                        # gate: raises if anything is wrong
+    validate_loans(df, AS_OF_DATE)            # gate: raises if anything is wrong
     LOANS_CLEAN.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(LOANS_CLEAN, index=False)   # category + datetime survive parquet
     print(f"loans_clean saved: {df.shape[0]} rows, {df.shape[1]} cols -> {LOANS_CLEAN}")

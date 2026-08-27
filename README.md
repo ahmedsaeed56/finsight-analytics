@@ -1,3 +1,13 @@
+---
+title: JazzCash Analytics
+emoji: ◆
+colorFrom: blue
+colorTo: indigo
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # FinSight — Conversational Product Analytics for Fintech
 
 A data science + AI project on digital wallet data: cleaning, analysis,

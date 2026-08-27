@@ -3,3 +3,20 @@ __pycache__/
 *.pyc
 .env 
 .ipynb_checkpoints/ 
+data/app.db/
+# runtime state
+data/app.db
+data/app.db-shm
+data/app.db-wal
+data/current_dataset.json
+data/uploads/
+graph_checkpoints.db
+graph_checkpoints.db-shm
+graph_checkpoints.db-wal
+
+# debug logs
+mcp.txt
+mcp_crash.txt
+
+# drift/test data
+data/raw/customers_drifted.csv 
