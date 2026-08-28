@@ -2,7 +2,7 @@
 
 > A product manager at a digital wallet company uploads three CSVs — customers, loans, transactions — and asks questions in plain English. The system cleans the data, runs analytics, scores loans and customers with fitted models, and can escape to generated pandas for anything the fixed tools can't express. **Every answer is computed in Python; the LLM only routes and narrates.**
 
-**Live demo:** [DEPLOYING TO STREAMLIT COMMUNITY CLOUD — LINK COMING] &nbsp;·&nbsp; 📄 **Business context and data dictionary:** [PROJECT_BRIEF.md](PROJECT_BRIEF.md)
+**Live demo:** https://finsight-analytics-researcher.streamlit.app &nbsp;·&nbsp; 📄 **Business context and data dictionary:** [PROJECT_BRIEF.md](PROJECT_BRIEF.md)
 
 ---
 
