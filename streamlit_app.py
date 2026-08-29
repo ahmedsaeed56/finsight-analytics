@@ -28,6 +28,14 @@ AND TWO ANNOYANCES
 ------------------
 The Gemini key is read from the environment and the input is not shown at all
 when one is present. Same for LangSmith. Keys are typed once, in .env.
+
+DEMO-MODE KEY ISOLATION
+-----------------------
+A second password (DEMO_PASSWORD) logs a visitor in as a demo user. Demo
+users never inherit the deployer's Gemini key: their key env vars are cleared
+at login and the credentials field is always shown, so they must paste their
+own key to run a query. This keeps the public demo from spending the owner's
+API quota.
 """
 
 import base64
@@ -401,6 +409,8 @@ if "msgs" not in st.session_state:
     st.session_state.msgs = []
 if "auth" not in st.session_state:
     st.session_state.auth = False
+if "is_demo" not in st.session_state:
+    st.session_state.is_demo = False
 if "meta" not in st.session_state:
     st.session_state.meta = None
     # On HF Spaces the container has no persistent disk on the free tier —
@@ -494,12 +504,20 @@ def check_password():
                                        type="primary")
 
         expected = get_secret("APP_PASSWORD")
+        demo = get_secret("DEMO_PASSWORD")
         if ok:
             if not expected:
                 st.error("APP_PASSWORD not found. Add `APP_PASSWORD=yourpassword` "
                          "to .env in the project root, then restart Streamlit.")
-            elif pw == expected:
+            elif pw and pw in (expected, demo):
                 st.session_state.auth = True
+                # A visitor who used the demo password is a demo user: they must
+                # not spend the deployer's Gemini quota. Flag them, and strip the
+                # pre-loaded key env vars so the graph can't fall back to them.
+                st.session_state.is_demo = bool(demo) and (pw == demo)
+                if st.session_state.is_demo:
+                    for _key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+                        os.environ.pop(_key, None)
                 st.rerun()
             else:
                 st.error("Incorrect password.")
@@ -622,29 +640,40 @@ with st.sidebar:
                     'In-process</span>', unsafe_allow_html=True)
 
     # ---- credentials ---------------------------------------------------
-    # SHOWN ONLY WHEN MISSING. A key that is already in .env needs no input
-    # box — a password field pre-filled with a value you never have to change
-    # is a prompt to do nothing, occupying permanent space to say so.
+    # SHOWN WHEN MISSING, OR ALWAYS FOR DEMO USERS. A key already in .env needs
+    # no input box — a password field pre-filled with a value you never change
+    # is a prompt to do nothing. But a DEMO user's key env vars were cleared at
+    # login, so the box always shows for them: they must paste their own key,
+    # which is what keeps the deployer's Gemini quota safe on the public demo.
     #
     # Checks BOTH env var names because the Gemini client accepts either and
-    # users may set only one. Without both, a .env with only GOOGLE_API_KEY
-    # shows the box every login even though the SDK finds its key fine.
-    _needs_key = (not _api_on) and not (
-        os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+    # users may set only one.
+    _is_demo = st.session_state.get("is_demo", False)
+    _needs_key = (not _api_on) and (
+        _is_demo or not (
+            os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+        )
     )
 
     if _needs_key:
         st.markdown("---")
         st.markdown("### Credentials")
+        if _is_demo:
+            st.caption("🔐 Demo mode — paste your own Gemini key to run queries.")
         _gem = st.text_input("Gemini API key", type="password",
-                             placeholder="Paste key, or set GEMINI_API_KEY in .env")
+                             placeholder="Paste your Gemini key")
         if _gem:
             os.environ["GEMINI_API_KEY"] = _gem
             os.environ["GOOGLE_API_KEY"] = _gem
+        elif _is_demo:
+            # No key pasted yet this render — make sure nothing lingers.
+            for _key in ("GEMINI_API_KEY", "GOOGLE_API_KEY"):
+                os.environ.pop(_key, None)
 
     st.markdown("---")
     if st.button("Sign out"):
         st.session_state.auth = False
+        st.session_state.is_demo = False
         st.rerun()
 
 
